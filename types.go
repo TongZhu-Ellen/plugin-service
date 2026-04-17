@@ -1,8 +1,7 @@
-package main
+package core
 
-import (
-	"sync"
-)
+
+
 
 type Input map[string]any
 type Output map[string]any
@@ -27,7 +26,8 @@ type PluginWrapper struct {
 	Status PluginStatus
 }
 
-type PluginManager struct {
-	mu      sync.RWMutex
-	plugins map[string]*PluginWrapper
+
+type Registry struct {
+    mu      sync.RWMutex
+    plugins map[string]*PluginWrapper
 }
