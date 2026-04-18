@@ -15,6 +15,7 @@ type Plugin interface {
 	Name() string
 	Version() string
 	Run(ctx context.Context, input Input) (output Output, err error)
+
 }
 
 
@@ -22,6 +23,8 @@ type Plugin interface {
 type PluginWrapper struct {
 	plugin Plugin
 	enabled bool
+	lastErr error 
+
 	
 }
 

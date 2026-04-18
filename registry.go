@@ -22,10 +22,13 @@ func (r *Registry) Register(p Plugin) error {
 	r.plugins[key] = &PluginWrapper{
 		plugin:  p,
 		enabled: false,
+		lastErr: nil,
 	}
 	return nil
 }
 
+// We reset lastErr on enable because enable implies user intent to retry execution,
+//  not inspect historical failures.
 func (r *Registry) Enable(name, version string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -38,7 +41,8 @@ func (r *Registry) Enable(name, version string) error {
 
 	w.enabled = true
 	return nil
-}
+} 
+
 
 func (r *Registry) Disable(name, version string) error {
 	r.mu.Lock()
@@ -53,47 +57,6 @@ func (r *Registry) Disable(name, version string) error {
 	w.enabled = false
 	return nil
 }
-
-func (r *Registry) RunAll(ctx context.Context, input Input) (map[string]Output, map[string]error) {
-
-	rt1 := make(map[string]Output)
-	rt2 := make(map[string]error)
-	var rtMu sync.Mutex
-
-	var wg sync.WaitGroup
-
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	for key, w := range r.plugins {
-		if !w.enabled {
-			continue
-		}
-
-		wg.Add(1)
-
-		go func(key string, w *PluginWrapper) {
-			defer wg.Done()
-
-			pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-
-			out, err := r.safeRun(pctx, w, input)
-
-			rtMu.Lock()
-			defer rtMu.Unlock()
-			rt1[key] = out
-			rt2[key] = err
-			
-
-		}(key, w)
-	}
-
-	wg.Wait()
-	return rt1, rt2
-}
-
-
 
 func (r *Registry) safeRun(ctx context.Context, w *PluginWrapper, input Input) (Output, error) {
 
@@ -135,3 +98,63 @@ func (r *Registry) safeRun(ctx context.Context, w *PluginWrapper, input Input) (
 	}
 
 }
+
+func (r *Registry) RunAll(ctx context.Context, input Input) map[string]Output {
+
+	rt := make(map[string]Output)
+	var rtMu sync.Mutex 
+
+
+	var wg sync.WaitGroup
+
+	r.mu.RLock()
+	plugins := make(map[string]*PluginWrapper, len(r.plugins)) // 这只是snapshot，针对pointer的；如果你这时候改Plugin的话会直接改变输出结果
+	for key, w := range r.plugins {
+		if w.enabled {
+			plugins[key] = w
+		}
+	}
+	r.mu.RUnlock()
+
+
+	for key, w := range plugins {
+		
+		
+		wg.Add(1)
+
+		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		go func(pctx context.Context, w *PluginWrapper, input Input, key string) {
+			defer wg.Done()
+			
+
+			out, err := safeRun(pctx, w, input)
+
+			if err != nil {
+				r.mu.Lock()
+				w.lastErr = err
+				r.mu.Unlock()
+			} else {
+				rtMu.Lock()
+				rt[key] = out 
+				rtMu.Unlock()
+			}
+		} (pctx, w, input, key)
+
+
+	}
+
+	wg.Wait()
+	return rt
+
+
+	
+
+	
+
+
+
+}
+
+
