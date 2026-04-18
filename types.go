@@ -1,5 +1,10 @@
 package core
 
+import (
+	"context"
+	"sync"
+)
+
 
 
 
@@ -9,21 +14,15 @@ type Output map[string]any
 type Plugin interface {
 	Name() string
 	Version() string
-	Run(input Input) (output Output, err error)
+	Run(ctx context.Context, input Input) (output Output, err error)
 }
 
-type PluginStatus string
-
-const (
-	StatusEnabled  PluginStatus = "enabled"
-	StatusDisabled PluginStatus = "disabled"
-	StatusError    PluginStatus = "error"
-)
 
 // wrapper to keep track of runtime status!
 type PluginWrapper struct {
-	Plugin Plugin
-	Status PluginStatus
+	plugin Plugin
+	enabled bool
+	
 }
 
 
