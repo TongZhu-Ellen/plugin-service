@@ -1,223 +1,97 @@
 # Plugin Execution System
 
-## 1. 项目概述
+一个用 Go 实现的插件化执行系统。主程序不感知任何业务逻辑，通过加载插件完成数据处理。
 
-这是一个插件化执行系统（Plugin-based Execution System），用于实现：
+运行：
 
-- 主程序不感知具体业务逻辑
-- 业务能力以插件形式动态扩展
-- 插件可独立开发、独立注册、独立维护
-- 主流程只负责调度与结果汇总
-
-核心目标是验证工程能力，包括：
-
-- 系统抽象与模块解耦
-- 并发执行与异常隔离
-- 生命周期管理设计
-- 可扩展架构设计能力
+```bash
+go run main.go
+```
 
 ---
 
-## 2. 架构设计
-
-整体构架分为三层：
-
-```
-        +----------------------+
-        |      Runner          |  执行调度 / 并发控制 / 超时处理
-        +----------+-----------+
-                   | 
-        +----------------------+
-        |      Registry        |  插件注册 / 状态管理 / 生命周期
-        +----------+-----------+
-                   |
-        +----------------------+
-        |       Plugins        |  插件实现（业务逻辑）
-        +----------------------+
-```
-
-目录结构：
+## 代码结构
 
 ```
 core/
-  ├── types.go      // 核心接口与数据结构定义
-  ├── registry.go   // 插件注册与状态管理
-  ├── runner.go     // 插件执行调度（并发、超时、隔离）
+  types.go      插件接口与公共数据结构
+  registry.go   插件注册与状态管理
+  runner.go     并发调度、超时控制、异常隔离
 
 plugins/
-  ├── xxx.go        // 示例插件实现（非框架必须）
-```
+  normalPlugin.go   正常插件（示例）
+  errorPlugin.go    返回 error 的插件（示例）
+  ...               其他测试插件
 
+main.go         入口，import 插件触发注册，调用 runner 执行
+```
 
 ---
 
-## 3. 插件接口设计
+## 核心设计
 
-所有插件必须实现统一接口：
+**插件接口**
 
 ```go
 type Plugin interface {
-	Name() string
-	Version() string
-	Run(ctx context.Context, input map[string]any) (map[string]any, error)
+    Name() string
+    Version() string
+    Run(ctx context.Context, input map[string]any) (map[string]any, error)
 }
 ```
 
-设计原则：
+主系统只依赖这个接口，不依赖任何具体插件实现。
 
-- 主系统只依赖 interface，不依赖具体实现
-- 插件通过 name@version 唯一标识
-- 插件执行完全由 Registry / Runner 调度
+**注册机制**
 
-## 4. Registry（插件注册中心）
+每个插件在自己的 `init()` 里调用 `core.Register()`，默认注册为禁用状态。主程序 `import _ "plugin_service/plugins"` 触发注册，无需文件扫描或反射。插件默认禁用，必须显式 `Enable()` 才会参与执行，这是有意为之的——避免新插件上线就自动跑起来。
 
-### 4.1 数据结构
+代价是插件必须在编译期引入，不支持运行时动态加载。对于本题的场景这是合理的取舍：稳定、可预测、无额外依赖。
 
-```go
-type Registry struct {
-	mu      sync.RWMutex
-	plugins map[string]*pluginWrapper
-}
+**执行流程**
 
-type pluginWrapper struct {
-	plugin  Plugin
-	enabled bool
-	lastErr error
-}
-```
+`RunAll` 先对**已启用插件列表**做一次快照（浅拷贝），然后基于该快照 fan-out 并发执行。每个插件跑在独立的 goroutine 里，通过 `sync.WaitGroup` 等待所有插件完成后汇总结果。
 
-## 4.2 职责范围
+每个插件使用独立的 `context.WithTimeout(ctx, TIMEOUT)` 包裹，如超时则主动放弃等待，错误记录到该插件实例的 `lastErr` 字段，不影响其他插件的执行。
 
-Registry 负责：
+> **设计约定**：诊断运行期间不应动态修改插件的启用状态。该行为与许多系统诊断工具一致，因此我们视其为可接受的约束，而非缺陷。快照机制的存在意味着运行期间的配置变更**会**影响本次诊断结果。
 
-- 插件注册  
-- 插件启用 / 禁用  
-- 插件状态查询  
-- 插件运行错误记录  
+**Registry 的边界**
 
-### 能力边界
-
-✔ 生命周期管理  
-✔ 状态管理  
-✔ 并发安全访问  
-
-✘ 不负责插件加载（IO / 动态扫描）  
-✘ 不负责插件执行  
-✘ 不负责分布式注册  
+Registry 只管生命周期：注册、启用/禁用、状态查询、错误记录。它不执行插件，也不关心执行策略。执行策略全部在 Runner 里，两者可以独立演化。
 
 ---
 
-## 4.3 插件注册机制（init 自动注册）
+## safeRun 的帮助与局限
 
-本系统采用 **显式注册 + init 自动注册** 模式：
+`safeRun` 用 goroutine + channel + `recover` 提供保障，但有明确的边界。
 
-每个插件在自己的 package 中：
+**能防住的：**
 
-```go
-func init() {
-    core.Register(MyPlugin{})
-}
+- 插件 `panic`：`defer recover()` 兜底，panic 转化为 error 并写入 channel，不会传播到主程序。
+- 插件执行超时：`select` 同时监听 `ctx.Done()` 和结果 channel，超时后调用方立即返回，不阻塞整个 `RunAll`。
+- 插件返回 error：正常记录到 `lastErr`，不影响其他插件。
 
+**⚠️ 防不住的：**
 
-```
+- **插件调用 `os.Exit()`**：Go runtime 直接终止整个进程，defer 不执行，channel 永远收不到结果，主程序没有任何机会处理。也就是说，我们只能防住“遵循golang控制流”的插件，对于手动强性中断进程的行为无解。
+- **插件超时后仍在后台运行**：`ctx.Done()` 触发后 `safeRun` 返回了，但插件的 goroutine 依然存活，直到它自己结束或进程退出。Go 没有强制 kill goroutine 的机制。如果插件不主动检查 `ctx`，超时控制对它实际上没有约束力。
+- **后台 goroutine 持有资源不释放**：和上一条同源的问题，goroutine 泄漏的同时，插件可能还持有文件句柄、数据库连接等资源，超时后这些不会被自动回收。
 
-
-### 设计说明
-
-- 利用 Go 的 `init` 机制，在程序启动阶段完成注册  
-- 主程序无需感知插件具体实现  
-- 插件只要被 `import`，即自动完成注册  
-
-### 优点
-
-- 简单、稳定、无反射  
-- 无需文件扫描或动态加载  
-- 插件与主系统解耦  
-
-### 限制
-
-- 插件必须在编译期引入  
-- 不支持运行时动态加载外部插件  
+**一言以蔽**：可以用来规范插件行为，但是距离防住故意/恶意的插件行为还是有距离！
 
 ---
 
-## 5. Runner（执行调度器）
+## 没做的事
 
-### 5.1 职责
+热加载、进程隔离、插件依赖关系这几项没有实现，但有思路：
 
-Runner 负责插件执行阶段的统一调度与隔离：
-
-- 获取已启用插件快照  
-- 并发执行插件  
-- 控制超时  
-- 捕获 panic / error  
-- 汇总结果  
+- **热加载**：Go 的 `plugin` 包可以加载 `.so` 文件，但跨平台支持差，且共享同一进程内存，一个插件崩溃仍会影响主进程。更稳的方案是子进程 + IPC（比如 gRPC），代价是复杂度大幅上升。
+- **进程隔离**：每个插件跑在独立子进程里，主进程通过 stdin/stdout 或 socket 通信。这才能真正解决上面 `os.Exit` 和 goroutine 泄漏的问题，代价是性能开销和通信复杂度。
+- **插件依赖**：在插件元信息里声明依赖版本，Registry 注册时做版本校验，执行前做拓扑排序。目前接口设计预留了扩展空间，加这层不需要改接口。
 
 ---
 
-### 5.2 并发模型
+## 依赖说明
 
-采用 **fan-out 并发模型**：
-
-
-```
-        input
-          |
-  -------------------
-  |       |         |
-pluginA pluginB  pluginC
-  |       |         |
- result  result    result
-
-
-```
-
-
-特点：
-
-- 输入分发到多个插件
-- 每个插件独立执行
-- 最终汇总结果
-
----
-
-## 5.3 超时与取消控制
-
-每个插件使用独立 context：
-
-```go
-ctx, cancel := context.WithTimeout(ctx, TIMEOUT)
-
-```
-
-
-保证：
-
-- 单插件不会无限阻塞（依赖 context 是否带 deadline）
-- 支持外部统一 cancel
-- 执行生命周期由 context 控制，而不是 goroutine 自行控制
-
----
-
-## 5.4 异常隔离
-
-处理策略：
-
-- panic → recover
-- error → 记录到 lastErr
-- 单插件失败不影响整体执行
-
----
-
-## 5.5 safeRun 机制
-
-safeRun 提供三层执行保障：
-
-- panic recovery
-- context 控制（cancel / deadline）
-- result channel 回传隔离
-
-说明：
-
-- 不可防止 os.Exit（Go runtime 限制）
-- goroutine 无法被强制 kill（语言限制）
+无第三方依赖，只用标准库。
