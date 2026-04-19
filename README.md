@@ -21,7 +21,7 @@ core/
 plugins/
   normalPlugin.go   正常插件（示例）
   errorPlugin.go    返回 error 的插件（示例）
-  ...               其他测试插件
+  ...             （分别对应safeRun里我做了保护的几种情况！）
 
 main.go         入口，import 插件触发注册，调用 runner 执行
 ```
