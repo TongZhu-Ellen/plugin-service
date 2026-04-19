@@ -69,11 +69,15 @@ func RunAll(ctx context.Context, input map[string]any) map[string]map[string]any
 
 		wg.Add(1)
 
-		pctx, cancel := context.WithTimeout(ctx, TIMEOUT)
-		defer cancel()
+		
+		
 
-		go func(pctx context.Context, w *pluginWrapper, input map[string]any, key string) {
+		go func(ctx context.Context, w *pluginWrapper, input map[string]any, key string) {
+
+			pctx, cancel := context.WithTimeout(ctx, TIMEOUT)
+
 			defer wg.Done()
+			defer cancel()
 
 			out, err := safeRun(pctx, w, input)
 
@@ -86,7 +90,7 @@ func RunAll(ctx context.Context, input map[string]any) map[string]map[string]any
 				rt[key] = out
 				rtMu.Unlock()
 			}
-		}(pctx, w, input, key)
+		}(ctx, w, input, key)
 
 	}
 
