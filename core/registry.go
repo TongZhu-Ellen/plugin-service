@@ -58,8 +58,8 @@ func Disable(name, version string) error {
 }
 
 func Status(name, version string) (exists bool, enabled bool, lastErr error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	key := name + "@" + version
 	w, ok := r.plugins[key]
