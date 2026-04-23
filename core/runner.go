@@ -79,8 +79,7 @@ func RunAll(ctx context.Context, input map[string]any) map[string]map[string]any
 			defer wg.Done()
 			defer cancel()
 
-			out, err := safeRun(pctx, w, deepCopy(input).(map[string]any)) // 这里我还真改了的！！！
-
+			out, err := safeRun(pctx, w, deepCopy(input).(map[string]any)) // 输入数据应该是不可变（immutable）且并发安全的！具体是什么我还没深究！
 			if err != nil {
 				r.mu.Lock()
 				w.lastErr = err
