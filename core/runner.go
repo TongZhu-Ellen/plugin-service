@@ -79,7 +79,7 @@ func RunAll(ctx context.Context, input map[string]any) map[string]map[string]any
 			defer wg.Done()
 			defer cancel()
 
-			out, err := safeRun(pctx, w, input)
+			out, err := safeRun(pctx, w, deepCopy(input).(map[string]any)) // 这里我还真改了的！！！
 
 			if err != nil {
 				r.mu.Lock()
@@ -97,4 +97,23 @@ func RunAll(ctx context.Context, input map[string]any) map[string]map[string]any
 	wg.Wait()
 	return rt
 
+}
+
+func deepCopy(v any) any {
+    switch val := v.(type) {
+    case map[string]any:
+        m := make(map[string]any, len(val))
+        for k, v2 := range val {
+            m[k] = deepCopy(v2)
+        }
+        return m
+    case []any:
+        s := make([]any, len(val))
+        for i, v2 := range val {
+            s[i] = deepCopy(v2)
+        }
+        return s
+    default:
+        return val // 假设是值类型
+    }
 }
